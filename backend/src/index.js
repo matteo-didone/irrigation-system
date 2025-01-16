@@ -1,8 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import { pool } from './config/db.js';
+import { pool, initializeDatabase } from './config/db.js';
 import { v4 as uuidv4 } from 'uuid';
 import redis from './config/redis.js';
+import mqtt from './config/mqtt.js';
 
 const app = express();
 const port = 3000;
@@ -10,15 +11,18 @@ const port = 3000;
 app.use(cors());
 app.use(express.json());
 
+// Inizializza il database all'avvio
+initializeDatabase().catch(console.error);
+
 // GET controllers
 app.get('/api/controllers', async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT c.*, 
-                (SELECT json_agg(s.*) 
-                FROM sprinklers s 
-                WHERE s.controller_id = c.id) as sprinklers
-            FROM controllers c 
+            SELECT c.*,
+            (SELECT json_agg(s.*)
+             FROM sprinklers s
+             WHERE s.controller_id = c.id) as sprinklers
+            FROM controllers c
             ORDER BY c.created_at DESC
         `);
         res.json(result.rows);
@@ -28,95 +32,77 @@ app.get('/api/controllers', async (req, res) => {
     }
 });
 
-// POST command
-app.post('/api/controllers/:id/command', async (req, res) => {
-    const { id } = req.params;
+// POST command per singolo irrigatore
+app.post('/api/controllers/:controllerId/sprinklers/:sprinklerId/command', async (req, res) => {
+    const { controllerId, sprinklerId } = req.params;
     const { command, duration } = req.body;
 
     try {
-        const commandId = uuidv4();
-
-        // Inizio transazione
         await pool.query('BEGIN');
 
-        try {
-            // Verifica stato del controllore
-            const controllerStatus = await pool.query(
-                'SELECT status FROM controllers WHERE id = $1',
-                [id]
-            );
+        const result = await pool.query(
+            'SELECT c.status as controller_status, s.id as sprinkler_id ' +
+            'FROM controllers c ' +
+            'JOIN sprinklers s ON s.controller_id = c.id ' +
+            'WHERE c.id = $1 AND s.id = $2',
+            [parseInt(controllerId), parseInt(sprinklerId)]
+        );
 
-            // Struttura comando
-            const commandData = {
-                id: commandId,
-                command,
-                duration,
-                timestamp: new Date().toISOString()
-            };
-
-            // Ottieni l'irrigatore per questo controller
-            const sprinklerResult = await pool.query(
-                'SELECT id FROM sprinklers WHERE controller_id = $1 LIMIT 1',
-                [id]
-            );
-
-            if (!controllerStatus.rows[0].status) {
-                // Controllore offline - salva in coda Redis
-                await redis.rpush(`commands:${id}`, JSON.stringify(commandData));
-
-                if (sprinklerResult.rows.length > 0) {
-                    // Salva nella cronologia come "QUEUED"
-                    await pool.query(
-                        'INSERT INTO command_history (id, controller_id, sprinkler_id, command_type, duration, status) VALUES ($1, $2, $3, $4, $5, $6)',
-                        [commandId, id, sprinklerResult.rows[0].id, command, duration, 'QUEUED']
-                    );
-                }
-
-                await pool.query('COMMIT');
-                res.json({ status: 'queued', commandId });
-            } else {
-                // Procedi con comando diretto
-                if (command === 'START') {
-                    await pool.query(
-                        'UPDATE controllers SET status = true, last_seen = CURRENT_TIMESTAMP WHERE id = $1',
-                        [id]
-                    );
-                } else if (command === 'STOP') {
-                    await pool.query(
-                        'UPDATE controllers SET status = false, last_seen = CURRENT_TIMESTAMP WHERE id = $1',
-                        [id]
-                    );
-                }
-
-                if (sprinklerResult.rows.length > 0) {
-                    const sprinklerId = sprinklerResult.rows[0].id;
-
-                    if (command === 'START') {
-                        await pool.query(
-                            'UPDATE sprinklers SET status = true, duration = $1 WHERE id = $2',
-                            [duration, sprinklerId]
-                        );
-                    } else if (command === 'STOP') {
-                        await pool.query(
-                            'UPDATE sprinklers SET status = false, duration = 0 WHERE id = $1',
-                            [sprinklerId]
-                        );
-                    }
-
-                    await pool.query(
-                        'INSERT INTO command_history (id, controller_id, sprinkler_id, command_type, duration, status) VALUES ($1, $2, $3, $4, $5, $6)',
-                        [commandId, id, sprinklerId, command, duration, 'PENDING']
-                    );
-                }
-
-                await pool.query('COMMIT');
-                res.json({ status: 'sent', commandId });
-            }
-        } catch (err) {
+        if (result.rows.length === 0) {
             await pool.query('ROLLBACK');
-            throw err;
+            return res.status(404).json({ error: 'Controllore o irrigatore non trovato' });
+        }
+
+        const { controller_status } = result.rows[0];
+        const commandId = uuidv4();
+
+        const commandData = {
+            id: commandId,
+            sprinklerId: parseInt(sprinklerId),
+            command,
+            duration: duration || 0,
+            timestamp: new Date().toISOString()
+        };
+
+        if (!controller_status) {
+            // Controllore offline - salva in coda Redis
+            await redis.rpush(`commands:${controllerId}`, JSON.stringify(commandData));
+
+            await pool.query(
+                'INSERT INTO command_history (id, controller_id, sprinkler_id, command_type, duration, status) ' +
+                'VALUES ($1, $2, $3, $4, $5, $6)',
+                [commandId, parseInt(controllerId), parseInt(sprinklerId), command, duration || 0, 'QUEUED']
+            );
+
+            await pool.query('COMMIT');
+            res.json({ status: 'queued', commandId });
+        } else {
+            // Controllore online - invia comando MQTT
+            mqtt.publish(`controllers/${controllerId}/command`, JSON.stringify(commandData));
+
+            if (command === 'START') {
+                await pool.query(
+                    'UPDATE sprinklers SET status = true, duration = $1 WHERE id = $2',
+                    [duration || 0, parseInt(sprinklerId)]
+                );
+            } else if (command === 'STOP') {
+                await pool.query(
+                    'UPDATE sprinklers SET status = false, duration = 0 WHERE id = $1',
+                    [parseInt(sprinklerId)]
+                );
+            }
+
+            await pool.query(
+                'INSERT INTO command_history (id, controller_id, sprinkler_id, command_type, duration, status) ' +
+                'VALUES ($1, $2, $3, $4, $5, $6)',
+                [commandId, parseInt(controllerId), parseInt(sprinklerId), command, duration || 0, 'QUEUED']
+            );
+
+            await pool.query('COMMIT');
+            res.json({ status: 'sent', commandId });
         }
     } catch (error) {
+        await pool.query('ROLLBACK');
         console.error('Error executing command:', error);
         res.status(500).json({ error: 'Internal server error' });
     }

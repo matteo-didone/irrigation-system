@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS sprinklers (
 
 -- Crea la tabella della cronologia dei comandi se non esiste
 CREATE TABLE IF NOT EXISTS command_history (
-    id SERIAL PRIMARY KEY,
+    id VARCHAR(36) PRIMARY KEY,  -- Cambiato da SERIAL a VARCHAR(36) per supportare UUID
     controller_id INTEGER REFERENCES controllers(id),
     sprinkler_id INTEGER REFERENCES sprinklers(id),
     command_type VARCHAR(20) NOT NULL,
@@ -31,83 +31,44 @@ CREATE TABLE IF NOT EXISTS command_history (
     executed_at TIMESTAMP WITH TIME ZONE
 );
 
--- Crea gli indici
-DO $ $ BEGIN IF NOT EXISTS (
-    SELECT
-        1
-    FROM
-        pg_indexes
-    WHERE
-        indexname = 'idx_controllers_status'
-) THEN CREATE INDEX idx_controllers_status ON controllers(status);
+-- Crea indici
+CREATE INDEX IF NOT EXISTS idx_controllers_status ON controllers(status);
+CREATE INDEX IF NOT EXISTS idx_sprinklers_controller_id ON sprinklers(controller_id);
+CREATE INDEX IF NOT EXISTS idx_sprinklers_status ON sprinklers(status);
+CREATE INDEX IF NOT EXISTS idx_command_history_controller_id ON command_history(controller_id);
+CREATE INDEX IF NOT EXISTS idx_command_history_status ON command_history(status);
 
-END IF;
+-- Inserisci dati di default se non esistono
+INSERT INTO controllers (name, ip_address, status)
+SELECT 'Controllore Giardino 1', '192.168.1.100', true
+WHERE NOT EXISTS (
+    SELECT 1 FROM controllers WHERE name = 'Controllore Giardino 1'
+);
 
-IF NOT EXISTS (
-    SELECT
-        1
-    FROM
-        pg_indexes
-    WHERE
-        indexname = 'idx_sprinklers_controller_id'
-) THEN CREATE INDEX idx_sprinklers_controller_id ON sprinklers(controller_id);
+-- Inserisci gli irrigatori per il controllore appena creato
+INSERT INTO sprinklers (controller_id, name)
+SELECT 1, 'Irrigatore Prato'
+WHERE EXISTS (
+    SELECT 1 FROM controllers WHERE id = 1
+)
+AND NOT EXISTS (
+    SELECT 1 FROM sprinklers WHERE name = 'Irrigatore Prato' AND controller_id = 1
+);
 
-END IF;
+INSERT INTO sprinklers (controller_id, name)
+SELECT 1, 'Irrigatore Aiuole'
+WHERE EXISTS (
+    SELECT 1 FROM controllers WHERE id = 1
+)
+AND NOT EXISTS (
+    SELECT 1 FROM sprinklers WHERE name = 'Irrigatore Aiuole' AND controller_id = 1
+);
 
-IF NOT EXISTS (
-    SELECT
-        1
-    FROM
-        pg_indexes
-    WHERE
-        indexname = 'idx_sprinklers_status'
-) THEN CREATE INDEX idx_sprinklers_status ON sprinklers(status);
-
-END IF;
-
-IF NOT EXISTS (
-    SELECT
-        1
-    FROM
-        pg_indexes
-    WHERE
-        indexname = 'idx_command_history_controller_id'
-) THEN CREATE INDEX idx_command_history_controller_id ON command_history(controller_id);
-
-END IF;
-
-IF NOT EXISTS (
-    SELECT
-        1
-    FROM
-        pg_indexes
-    WHERE
-        indexname = 'idx_command_history_status'
-) THEN CREATE INDEX idx_command_history_status ON command_history(status);
-
-END IF;
-
-END $ $;
-
--- Inserisci dati di default
-DO $ $ BEGIN IF NOT EXISTS (
-    SELECT
-        1
-    FROM
-        controllers
-    WHERE
-        name = 'Controllore Giardino 1'
-) THEN
-INSERT INTO
-    controllers (name, ip_address, status)
-VALUES
-    ('Controllore Giardino 1', '192.168.1.100', true);
-
-INSERT INTO
-    sprinklers (controller_id, name)
-VALUES
-    (1, 'Irrigatore 1');
-
-END IF;
-
-END $ $;
+INSERT INTO sprinklers (controller_id, name)
+SELECT 1, 'Irrigatore Orto'
+WHERE EXISTS (
+    SELECT 1 FROM controllers WHERE id = 1
+)
+AND NOT EXISTS (
+    SELECT 1 FROM sprinklers WHERE name = 'Irrigatore Orto' AND controller_id = 1
+);

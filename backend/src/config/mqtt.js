@@ -1,17 +1,15 @@
 import mqtt from 'mqtt';
 import { pool } from './db.js';
-import redis from './config/redis.js';
+import redis from './redis.js';
 
 const client = mqtt.connect('mqtt://mosquitto:1883');
 
-// Funzione per processare i comandi in coda
 async function processQueuedCommands(controllerId) {
     const command = await redis.lpop(`commands:${controllerId}`);
     if (command) {
         const parsedCommand = JSON.parse(command);
         client.publish(`controllers/${controllerId}/command`, JSON.stringify(parsedCommand));
 
-        // Aggiorna lo stato del comando a SENT
         await pool.query(
             'UPDATE command_history SET status = $1 WHERE id = $2',
             ['SENT', parsedCommand.id]
@@ -32,28 +30,24 @@ client.on('message', async (topic, message) => {
         if (topic.endsWith('/status')) {
             const status = JSON.parse(message.toString());
 
-            // Update controller status
             await pool.query(
                 'UPDATE controllers SET status = $1, last_seen = CURRENT_TIMESTAMP WHERE id = $2',
                 [status.online, controllerId]
             );
 
-            // Se il controllore è tornato online, processa i comandi in coda
             if (status.online) {
                 await processQueuedCommands(controllerId);
             }
 
-            // Update sprinkler status
             if (status.sprinklers) {
                 for (const [sprinklerId, sprinklerStatus] of Object.entries(status.sprinklers)) {
                     await pool.query(
-                        'UPDATE sprinklers SET status = $1, duration = $2, last_active = $3 WHERE id = $4',
-                        [sprinklerStatus.isIrrigating, sprinklerStatus.duration, sprinklerStatus.startedAt, sprinklerId]
+                        'UPDATE sprinklers SET status = $1, duration = $2, last_active = CURRENT_TIMESTAMP WHERE id = $3',
+                        [sprinklerStatus.isIrrigating, sprinklerStatus.duration, parseInt(sprinklerId)]
                     );
                 }
             }
-        }
-        else if (topic.endsWith('/command_ack')) {
+        } else if (topic.endsWith('/command_ack')) {
             const ack = JSON.parse(message.toString());
             await pool.query(
                 'UPDATE command_history SET status = $1, executed_at = CURRENT_TIMESTAMP WHERE id = $2',
@@ -65,7 +59,7 @@ client.on('message', async (topic, message) => {
     }
 });
 
-// Intervallo per verificare i comandi in coda
+// Controlla i comandi in coda ogni 5 secondi
 setInterval(async () => {
     try {
         const keys = await redis.keys('commands:*');
