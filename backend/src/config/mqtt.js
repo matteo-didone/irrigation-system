@@ -1,7 +1,23 @@
 import mqtt from 'mqtt';
 import { pool } from './db.js';
+import redis from './config/redis.js';
 
 const client = mqtt.connect('mqtt://mosquitto:1883');
+
+// Funzione per processare i comandi in coda
+async function processQueuedCommands(controllerId) {
+    const command = await redis.lpop(`commands:${controllerId}`);
+    if (command) {
+        const parsedCommand = JSON.parse(command);
+        client.publish(`controllers/${controllerId}/command`, JSON.stringify(parsedCommand));
+
+        // Aggiorna lo stato del comando a SENT
+        await pool.query(
+            'UPDATE command_history SET status = $1 WHERE id = $2',
+            ['SENT', parsedCommand.id]
+        );
+    }
+}
 
 client.on('connect', () => {
     console.log('Connected to MQTT broker');
@@ -21,6 +37,11 @@ client.on('message', async (topic, message) => {
                 'UPDATE controllers SET status = $1, last_seen = CURRENT_TIMESTAMP WHERE id = $2',
                 [status.online, controllerId]
             );
+
+            // Se il controllore è tornato online, processa i comandi in coda
+            if (status.online) {
+                await processQueuedCommands(controllerId);
+            }
 
             // Update sprinkler status
             if (status.sprinklers) {
@@ -43,5 +64,25 @@ client.on('message', async (topic, message) => {
         console.error('Error processing MQTT message:', error);
     }
 });
+
+// Intervallo per verificare i comandi in coda
+setInterval(async () => {
+    try {
+        const keys = await redis.keys('commands:*');
+        for (const key of keys) {
+            const controllerId = key.split(':')[1];
+            const controllerStatus = await pool.query(
+                'SELECT status FROM controllers WHERE id = $1',
+                [controllerId]
+            );
+
+            if (controllerStatus.rows[0].status) {
+                await processQueuedCommands(controllerId);
+            }
+        }
+    } catch (error) {
+        console.error('Error checking queued commands:', error);
+    }
+}, 5000);
 
 export default client;
