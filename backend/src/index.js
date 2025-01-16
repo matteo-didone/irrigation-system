@@ -27,7 +27,6 @@ app.get('/api/controllers', async (req, res) => {
 });
 
 // POST command
-// POST command
 app.post('/api/controllers/:id/command', async (req, res) => {
     const { id } = req.params;
     const { command, duration } = req.body;
