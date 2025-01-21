@@ -1,0 +1,31 @@
+flowchart TB
+    subgraph Client Layer
+        FE[Frontend Web App]
+    end
+
+    subgraph Server Layer
+        BE[Backend API]
+        DB[(Database)]
+        RD[(Redis)]
+    end
+
+    subgraph Message Layer
+        MQTT[MQTT Broker]
+    end
+
+    subgraph Device Layer
+        CTRL[Controllore]
+        IRR1[Irrigatore 1]
+        IRR2[Irrigatore 2]
+    end
+
+    %% Connessioni e protocolli
+    FE <-->|HTTP/REST| BE
+    BE <-->|SQL| DB
+    BE <-->|Redis Protocol| RD
+    BE <-->|MQTT| MQTT
+    MQTT <-->|MQTT| CTRL
+    CTRL -->|GPIO/Serial| IRR1
+    CTRL -->|GPIO/Serial| IRR2
+
+    class FE,BE,DB,RD,MQTT,CTRL,IRR1,IRR2 node
