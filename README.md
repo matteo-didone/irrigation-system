@@ -1,7 +1,41 @@
-# Sistema di Controllo Irrigazione - Documentazione Tecnica
+# Sistema di Controllo Irrigazione - Documentazione Completa
 
 ## 🌟 Panoramica
 Sistema di controllo remoto per apparati di irrigazione che permette di monitorare e controllare irrigatori tramite un'applicazione web, gestendo anche situazioni di connettività instabile.
+
+## 🏗 Panoramica dell'Architettura
+L'architettura del sistema è suddivisa in quattro layer principali:
+- Layer Dispositivi (Device Layer)
+- Layer Messaggistica (Message Layer)
+- Layer Server
+- Layer Client
+
+```mermaid
+flowchart TB
+ subgraph Client Layer
+ FE[Frontend Web App]
+ end
+ subgraph Server Layer
+ BE[Backend API]
+ DB[(Database)]
+ RD[(Redis)]
+ end
+ subgraph Message Layer
+ MQTT[MQTT Broker]
+ end
+ subgraph Device Layer
+ CTRL[Controllore]
+ IRR1[Irrigatore 1]
+ IRR2[Irrigatore 2]
+ end
+ FE <-->|HTTP/REST| BE
+ BE <-->|SQL| DB
+ BE <-->|Redis Protocol| RD
+ BE <-->|MQTT| MQTT
+ MQTT <-->|MQTT| CTRL
+ CTRL -->|GPIO/Serial| IRR1
+ CTRL -->|GPIO/Serial| IRR2
+```
 
 ## 📝 Requisiti e Implementazione
 
@@ -89,7 +123,62 @@ async function processQueuedCommands(controllerId) {
 }
 ```
 
-## 🔄 Flusso dei Dati
+## 📱 Layer Dispositivi (Device Layer)
+### Componenti
+- **Irrigatori**: Dispositivi finali che controllano il flusso d'acqua
+- **Controllore**: Dispositivo (es. Raspberry Pi) che gestisce gli irrigatori
+
+### Comunicazione
+- **Protocollo**: GPIO/Serial
+- **Motivazione**: La comunicazione diretta via GPIO o seriale garantisce:
+  - Bassa latenza
+  - Alta affidabilità
+  - Controllo hardware diretto
+
+## 📡 Layer Messaggistica (Message Layer)
+### Componenti
+- **MQTT Broker**: Gestore centrale dei messaggi
+
+### Comunicazione
+- **Protocollo**: MQTT
+- **Motivazione**:
+  - Protocollo leggero ottimizzato per IoT
+  - Gestione efficiente di connessioni instabili
+  - Pattern publish/subscribe ideale per IoT
+  - Minimo overhead di rete
+
+## 🖥️ Layer Server
+### Componenti
+- **Backend API** (Express.js)
+- **Database** (PostgreSQL)
+- **Cache** (Redis)
+
+### Comunicazioni
+1. **Backend ↔️ MQTT**
+   - Protocollo: MQTT
+   - Uso: Comunicazione real-time con dispositivi
+2. **Backend ↔️ Database**
+   - Protocollo: SQL
+   - Uso: Persistenza dati e query complesse
+3. **Backend ↔️ Redis**
+   - Protocollo: Redis Protocol
+   - Uso: Gestione comandi offline e cache
+
+## 🌐 Layer Client
+### Componenti
+- **Frontend Web App**
+
+### Comunicazione
+- **Protocollo**: HTTP/REST
+- **Motivazione**:
+  - Standard web universale
+  - Facilità di implementazione
+  - Ampio supporto strumenti/librerie
+  - Natura stateless
+
+## 🔄 Flussi di Dati
+
+### Flusso dei Dati Base
 
 ```mermaid
 sequenceDiagram
@@ -109,6 +198,41 @@ sequenceDiagram
         BE->>RD: Salva in coda
     end
     BE->>FE: Risposta
+```
+
+### 1. Flusso Comandi (Top-down)
+```
+Frontend → Backend → MQTT Broker → Controllore → Irrigatore
+```
+
+Esempio comando:
+```json
+{
+"command": "START",
+"duration": 5,
+"sprinklerId": 1
+}
+```
+
+### 2. Flusso Stati (Bottom-up)
+```
+Irrigatore → Controllore → MQTT Broker → Backend → Database/Frontend
+```
+
+Esempio stato:
+```json
+{
+"controllerId": 1,
+"online": true,
+"sprinklers": [
+ {"id": 1, "status": "active", "duration": 5}
+ ]
+}
+```
+
+### 3. Flusso Offline
+```
+Frontend → Backend → Redis → Backend → MQTT (quando online)
 ```
 
 ### Processo Dettagliato:
@@ -173,6 +297,55 @@ CREATE TABLE sprinklers (
 - `controllers/{id}/command`: Invio comandi
 - `controllers/{id}/status`: Stato controllore
 - `controllers/{id}/command_ack`: Conferme
+
+## 🤔 Motivazioni Scelte Tecnologiche
+
+### 1. MQTT per IoT
+- Ottimizzato per reti non affidabili
+- Supporto Quality of Service (QoS)
+- Efficiente per dispositivi con risorse limitate
+- Pattern publish/subscribe ideale per IoT
+
+### 2. Redis per Code
+- Performance elevate per code messaggi
+- Ottimo per dati temporanei
+- Supporto strutture dati complesse
+- Facile implementazione producer/consumer
+
+### 3. HTTP/REST per Frontend
+- Standard universale
+- Debug facilitato
+- Ampio ecosistema tool/librerie
+- Caching naturale
+- Stateless
+
+### 4. PostgreSQL per Dati
+- ACID compliance
+- Ottimo per relazioni (controllori-irrigatori)
+- Query complesse
+- Alta affidabilità
+
+## ✅ Vantaggi dell'Architettura
+
+1. **Scalabilità**
+   - Componenti indipendenti
+   - Facile aggiunta nuovi dispositivi
+   - Load balancing naturale
+
+2. **Resilienza**
+   - Gestione offline/online
+   - Persistenza comandi
+   - Recupero automatico
+
+3. **Manutenibilità**
+   - Separazione responsabilità
+   - Modularità
+   - Facile debugging
+
+4. **Flessibilità**
+   - Facile aggiunta nuove funzionalità
+   - Supporto diversi tipi dispositivi
+   - Aggiornamenti non invasivi
 
 ## 🚀 Deployment
 
